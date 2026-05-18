@@ -80,7 +80,7 @@ export default function RadialMenu() {
     }).catch(() => {});
     // Pre-load data so it's ready when the menu first shows
     useClipboardStore.getState().init();
-    usePhraseStore.getState().loadGroups();
+    usePhraseStore.getState().init();
 
     // Listen for theme changes from the main window
     let unlistenTheme: UnlistenFn | undefined;

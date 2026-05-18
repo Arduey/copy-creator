@@ -29,7 +29,7 @@ export default function PhrasePage() {
     loading,
     setSearch,
     setSelectedGroup,
-    loadGroups,
+    init,
     loadPhrases,
     createGroup,
     updateGroup,
@@ -41,7 +41,7 @@ export default function PhrasePage() {
   } = usePhraseStore();
 
   useEffect(() => {
-    loadGroups();
+    init();
   }, []);
 
   useEffect(() => {

@@ -352,6 +352,7 @@ pub fn create_phrase_group(app: AppHandle, name: String) -> Result<serde_json::V
         params![id, name, &now, &now],
     )
     .map_err(|e| e.to_string())?;
+    let _ = app.emit("phrase-groups-changed", ());
     Ok(serde_json::json!({
         "id": id,
         "name": name,
@@ -371,6 +372,7 @@ pub fn update_phrase_group(app: AppHandle, id: String, name: String) -> Result<(
         params![name, &now, id],
     )
     .map_err(|e| e.to_string())?;
+    let _ = app.emit("phrase-groups-changed", ());
     Ok(())
 }
 
@@ -382,6 +384,7 @@ pub fn delete_phrase_group(app: AppHandle, id: String) -> Result<(), String> {
         .map_err(|e| e.to_string())?;
     conn.execute("DELETE FROM phrase_groups WHERE id = ?1", params![id])
         .map_err(|e| e.to_string())?;
+    let _ = app.emit("phrase-groups-changed", ());
     Ok(())
 }
 

@@ -150,6 +150,8 @@ export default function SettingsContent({ embedded }: Props) {
       i18n.changeLanguage(localLang);
     }
 
+    await settings.loadSettings();
+
     setSaved(true);
     setTimeout(() => setSaved(false), 2000);
   };

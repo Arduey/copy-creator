@@ -1,5 +1,6 @@
 import { create } from "zustand";
 import { invoke } from "@tauri-apps/api/core";
+import { listen } from "@tauri-apps/api/event";
 
 interface PhraseGroup {
   id: string;
@@ -47,7 +48,10 @@ interface PhraseState {
   pastePhrase: (phrase: Phrase) => Promise<void>;
 }
 
-export const usePhraseStore = create<PhraseState>((set, get) => ({
+export const usePhraseStore = create<PhraseState>()((set, get) => {
+  let initialized = false;
+
+  return {
   groups: [],
   phrases: [],
   selectedGroupId: null,
@@ -67,6 +71,17 @@ export const usePhraseStore = create<PhraseState>((set, get) => ({
     } catch (e) {
       console.error("Failed to load phrase groups:", e);
     }
+  },
+
+  init: () => {
+    if (initialized) return;
+    initialized = true;
+
+    listen("phrase-groups-changed", () => {
+      get().loadGroups();
+    });
+
+    get().loadGroups();
   },
 
   loadPhrases: async (groupId: string) => {
@@ -158,4 +173,5 @@ export const usePhraseStore = create<PhraseState>((set, get) => ({
       console.error("Paste failed:", e);
     }
   },
-}));
+  };
+});
