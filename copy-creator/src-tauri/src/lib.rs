@@ -181,6 +181,16 @@ pub fn run() {
             shortcut::update_shortcut,
             shortcut::set_radial_menu_enabled,
             tray::update_tray_language,
+            db::check_api_key,
+            db::save_api_key_label,
+            db::get_api_key_label,
+            db::delete_api_key_label,
+            db::list_api_key_labels,
+            db::mark_expired,
+            db::export_labels_json,
+            db::mark_toast_shown,
+            db::is_toast_shown,
+            db::set_user_api_key,
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");

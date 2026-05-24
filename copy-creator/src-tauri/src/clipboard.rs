@@ -411,6 +411,28 @@ fn insert_and_emit(app: &AppHandle, record_type: &str, content: &str) {
             Err(_) => None,
         };
     }
+    // API Key detection
+    let (is_key, key_preview, guessed_service) =
+        if (record_type == "text" || record_type == "link") && crate::db::is_api_key(content) {
+            let preview = crate::db::make_key_preview(content);
+            let guess = crate::db::guess_service(content).map(|s| s.to_string());
+            if !crate::db::is_toast_shown_internal(app, &preview) {
+                crate::db::mark_toast_shown_internal(app, &preview);
+                app.emit(
+                    "api-key-detected",
+                    serde_json::json!({
+                        "record_id": id,
+                        "key_preview": &preview,
+                        "guess": &guess,
+                    }),
+                )
+                .ok();
+            }
+            (true, preview, guess)
+        } else {
+            (false, String::new(), None::<String>)
+        };
+
     app.emit(
         "clipboard-update",
         serde_json::json!({
@@ -419,6 +441,10 @@ fn insert_and_emit(app: &AppHandle, record_type: &str, content: &str) {
             "content": content,
             "source_app": "",
             "created_at": now,
+            "is_api_key": is_key,
+            "key_preview": key_preview,
+            "guessed_service": guessed_service,
+            "label": null,
         }),
     ).ok();
 }

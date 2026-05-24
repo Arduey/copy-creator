@@ -4,6 +4,72 @@ use std::path::PathBuf;
 use std::sync::Mutex;
 use std::collections::HashSet;
 
+// === API Key Detection ===
+
+pub fn is_api_key(content: &str) -> bool {
+    let content = content.trim();
+    if content.len() < 20 || content.len() > 200 {
+        return false;
+    }
+    if content.contains('\n') || content.contains(' ') {
+        return false;
+    }
+    let patterns = ["sk-", "AIza", "glpat-", "ghp_", "xai-"];
+    patterns.iter().any(|p| content.starts_with(p))
+}
+
+pub fn guess_service(content: &str) -> Option<&'static str> {
+    if content.starts_with("AIza") {
+        return Some("Gemini");
+    }
+    if content.starts_with("glpat-") {
+        return Some("GitLab");
+    }
+    if content.starts_with("ghp_") {
+        return Some("GitHub");
+    }
+    if content.starts_with("xai-") {
+        return Some("Grok");
+    }
+    None
+}
+
+pub fn make_key_preview(content: &str) -> String {
+    let c = content.trim();
+    if c.len() >= 12 {
+        format!("{}...{}", &c[..8], &c[c.len() - 4..])
+    } else {
+        c.to_string()
+    }
+}
+
+pub fn is_toast_shown_internal(app: &AppHandle, key_preview: &str) -> bool {
+    let state = app.state::<DbState>();
+    let conn = match state.conn.lock() {
+        Ok(c) => c,
+        Err(_) => return false,
+    };
+    conn.query_row(
+        "SELECT 1 FROM toast_shown WHERE key_preview = ?1",
+        params![key_preview],
+        |_| Ok(true),
+    )
+    .unwrap_or(false)
+}
+
+pub fn mark_toast_shown_internal(app: &AppHandle, key_preview: &str) {
+    let state = app.state::<DbState>();
+    let conn = match state.conn.lock() {
+        Ok(c) => c,
+        Err(_) => return,
+    };
+    conn.execute(
+        "INSERT OR IGNORE INTO toast_shown (key_preview) VALUES (?1)",
+        params![key_preview],
+    )
+    .ok();
+}
+
 pub struct DbState {
     pub conn: Mutex<Connection>,
 }
@@ -91,7 +157,8 @@ pub fn init_db(app: &AppHandle) -> Result<(), Box<dyn std::error::Error>> {
             type TEXT NOT NULL,
             content TEXT NOT NULL,
             source_app TEXT DEFAULT '',
-            created_at TEXT NOT NULL
+            created_at TEXT NOT NULL,
+            user_api_key INTEGER DEFAULT 0
         );
 
         CREATE INDEX IF NOT EXISTS idx_clipboard_created_at
@@ -145,8 +212,29 @@ pub fn init_db(app: &AppHandle) -> Result<(), Box<dyn std::error::Error>> {
         INSERT OR IGNORE INTO settings (key, value) VALUES ('shortcut_key', '');
 
         UPDATE settings SET value = 'google' WHERE key = 'default_translate_engine' AND value = 'builtin';
+
+        CREATE TABLE IF NOT EXISTS api_key_labels (
+            id          INTEGER PRIMARY KEY AUTOINCREMENT,
+            key_preview TEXT NOT NULL UNIQUE,
+            service     TEXT NOT NULL,
+            api_base    TEXT DEFAULT '',
+            note        TEXT DEFAULT '',
+            is_expired  INTEGER DEFAULT 0,
+            created_at  TEXT NOT NULL,
+            updated_at  TEXT NOT NULL
+        );
+
+        CREATE TABLE IF NOT EXISTS toast_shown (
+            key_preview TEXT PRIMARY KEY
+        );
         ",
     )?;
+
+    // Runtime migrations for existing databases
+    conn.execute(
+        "ALTER TABLE clipboard_records ADD COLUMN user_api_key INTEGER DEFAULT 0",
+        [],
+    ).ok();
 
     app.manage(DbState {
         conn: Mutex::new(conn),
@@ -239,7 +327,7 @@ pub fn get_clipboard_records(
         let escaped = q.replace('\\', "\\\\").replace('%', "\\%").replace('_', "\\_");
         let mut stmt = conn
             .prepare(
-                "SELECT id, type, content, source_app, created_at FROM clipboard_records
+                "SELECT id, type, content, source_app, created_at, user_api_key FROM clipboard_records
                  WHERE content LIKE '%' || ?1 || '%' ESCAPE '\\' ORDER BY created_at DESC LIMIT ?2",
             )
             .map_err(|e| e.to_string())?;
@@ -251,6 +339,7 @@ pub fn get_clipboard_records(
                     "content": row.get::<_, String>(2)?,
                     "source_app": row.get::<_, String>(3)?,
                     "created_at": row.get::<_, String>(4)?,
+                    "user_api_key": row.get::<_, i64>(5)?,
                 }))
             })
             .map_err(|e| e.to_string())?;
@@ -260,7 +349,7 @@ pub fn get_clipboard_records(
     } else {
         let mut stmt = conn
             .prepare(
-                "SELECT id, type, content, source_app, created_at FROM clipboard_records
+                "SELECT id, type, content, source_app, created_at, user_api_key FROM clipboard_records
                  ORDER BY created_at DESC LIMIT ?1",
             )
             .map_err(|e| e.to_string())?;
@@ -272,6 +361,7 @@ pub fn get_clipboard_records(
                     "content": row.get::<_, String>(2)?,
                     "source_app": row.get::<_, String>(3)?,
                     "created_at": row.get::<_, String>(4)?,
+                    "user_api_key": row.get::<_, i64>(5)?,
                 }))
             })
             .map_err(|e| e.to_string())?;
@@ -279,6 +369,71 @@ pub fn get_clipboard_records(
             records.push(row.map_err(|e| e.to_string())?);
         }
     }
+
+    // Build label map for API key enrichment
+    let mut label_map: std::collections::HashMap<String, serde_json::Value> =
+        std::collections::HashMap::new();
+    if let Ok(mut stmt) = conn.prepare(
+        "SELECT key_preview, service, api_base, note, is_expired FROM api_key_labels",
+    ) {
+        if let Ok(rows) = stmt.query_map([], |row| {
+            Ok((
+                row.get::<_, String>(0)?,
+                row.get::<_, String>(1)?,
+                row.get::<_, String>(2)?,
+                row.get::<_, String>(3)?,
+                row.get::<_, i64>(4)?,
+            ))
+        }) {
+            for row in rows.flatten() {
+                let (preview, service, api_base, note, is_expired) = row;
+                label_map.insert(
+                    preview,
+                    serde_json::json!({
+                        "service": service,
+                        "api_base": api_base,
+                        "note": note,
+                        "is_expired": is_expired != 0,
+                    }),
+                );
+            }
+        }
+    }
+
+    let records = records
+        .into_iter()
+        .map(|rec| {
+            let rec_type = rec["type"].as_str().unwrap_or("").to_string();
+            let content = rec["content"].as_str().unwrap_or("").to_string();
+            let user_key = rec["user_api_key"].as_i64().unwrap_or(0) != 0;
+            let (is_key, key_preview_val, guess_val, label_val) =
+                if (rec_type == "text" || rec_type == "link") && (user_key || is_api_key(&content)) {
+                    let kp = make_key_preview(&content);
+                    let g = guess_service(&content)
+                        .map(|s| serde_json::Value::String(s.to_string()))
+                        .unwrap_or(serde_json::Value::Null);
+                    let lbl = label_map.get(&kp).cloned().unwrap_or(serde_json::Value::Null);
+                    (true, serde_json::Value::String(kp), g, lbl)
+                } else {
+                    (
+                        false,
+                        serde_json::Value::String(String::new()),
+                        serde_json::Value::Null,
+                        serde_json::Value::Null,
+                    )
+                };
+            let mut obj = rec;
+            if let serde_json::Value::Object(ref mut map) = obj {
+                map.insert("is_api_key".to_string(), serde_json::Value::Bool(is_key));
+                map.insert("user_api_key".to_string(), serde_json::Value::Bool(user_key));
+                map.insert("key_preview".to_string(), key_preview_val);
+                map.insert("guessed_service".to_string(), guess_val);
+                map.insert("label".to_string(), label_val);
+            }
+            obj
+        })
+        .collect();
+
     Ok(records)
 }
 
@@ -681,7 +836,8 @@ fn migrate_storage(app: &AppHandle, new_path: &str) -> Result<(), String> {
                 type TEXT NOT NULL,
                 content TEXT NOT NULL,
                 source_app TEXT DEFAULT '',
-                created_at TEXT NOT NULL
+                created_at TEXT NOT NULL,
+                user_api_key INTEGER DEFAULT 0
             );
             CREATE INDEX IF NOT EXISTS idx_clipboard_created_at ON clipboard_records(created_at);
             CREATE TABLE IF NOT EXISTS phrase_groups (
@@ -714,6 +870,19 @@ fn migrate_storage(app: &AppHandle, new_path: &str) -> Result<(), String> {
             CREATE TABLE IF NOT EXISTS settings (
                 key TEXT PRIMARY KEY,
                 value TEXT NOT NULL
+            );
+            CREATE TABLE IF NOT EXISTS api_key_labels (
+                id          INTEGER PRIMARY KEY AUTOINCREMENT,
+                key_preview TEXT NOT NULL UNIQUE,
+                service     TEXT NOT NULL,
+                api_base    TEXT DEFAULT '',
+                note        TEXT DEFAULT '',
+                is_expired  INTEGER DEFAULT 0,
+                created_at  TEXT NOT NULL,
+                updated_at  TEXT NOT NULL
+            );
+            CREATE TABLE IF NOT EXISTS toast_shown (
+                key_preview TEXT PRIMARY KEY
             );
             ",
         )
@@ -823,4 +992,150 @@ pub async fn select_storage_folder(app: AppHandle) -> Result<String, String> {
         Err(std::sync::mpsc::RecvTimeoutError::Timeout) => Err("timeout".to_string()),
         Err(std::sync::mpsc::RecvTimeoutError::Disconnected) => Err("cancelled".to_string()),
     }
+}
+
+// === API Key Label Commands ===
+
+#[tauri::command]
+pub fn check_api_key(content: String) -> serde_json::Value {
+    let is_key = is_api_key(&content);
+    let preview = if is_key { make_key_preview(&content) } else { String::new() };
+    let guess = if is_key { guess_service(&content).map(|s| s.to_string()) } else { None };
+    serde_json::json!({ "is_key": is_key, "preview": preview, "guess": guess })
+}
+
+#[tauri::command]
+pub fn save_api_key_label(
+    app: AppHandle,
+    key_preview: String,
+    service: String,
+    api_base: String,
+    note: String,
+) -> Result<(), String> {
+    let state = app.state::<DbState>();
+    let conn = state.conn.lock().map_err(|e| e.to_string())?;
+    let now = chrono::Utc::now().to_rfc3339();
+    conn.execute(
+        "INSERT INTO api_key_labels (key_preview, service, api_base, note, created_at, updated_at)
+         VALUES (?1, ?2, ?3, ?4, ?5, ?6)
+         ON CONFLICT(key_preview) DO UPDATE SET service=?2, api_base=?3, note=?4, updated_at=?6",
+        params![key_preview, service, api_base, note, &now, &now],
+    )
+    .map_err(|e| e.to_string())?;
+    Ok(())
+}
+
+#[tauri::command]
+pub fn get_api_key_label(app: AppHandle, key_preview: String) -> Option<serde_json::Value> {
+    let state = app.state::<DbState>();
+    let conn = state.conn.lock().ok()?;
+    conn.query_row(
+        "SELECT service, api_base, note, is_expired, created_at FROM api_key_labels WHERE key_preview = ?1",
+        params![key_preview],
+        |row| {
+            Ok(serde_json::json!({
+                "key_preview": key_preview,
+                "service": row.get::<_, String>(0)?,
+                "api_base": row.get::<_, String>(1)?,
+                "note": row.get::<_, String>(2)?,
+                "is_expired": row.get::<_, i64>(3)? != 0,
+                "created_at": row.get::<_, String>(4)?,
+            }))
+        },
+    )
+    .ok()
+}
+
+#[tauri::command]
+pub fn delete_api_key_label(app: AppHandle, key_preview: String) -> Result<(), String> {
+    let state = app.state::<DbState>();
+    let conn = state.conn.lock().map_err(|e| e.to_string())?;
+    conn.execute(
+        "DELETE FROM api_key_labels WHERE key_preview = ?1",
+        params![key_preview],
+    )
+    .map_err(|e| e.to_string())?;
+    Ok(())
+}
+
+fn list_labels_internal(conn: &Connection) -> Result<Vec<serde_json::Value>, String> {
+    let mut stmt = conn
+        .prepare(
+            "SELECT key_preview, service, api_base, note, is_expired, created_at \
+             FROM api_key_labels ORDER BY created_at DESC",
+        )
+        .map_err(|e| e.to_string())?;
+    let rows = stmt
+        .query_map([], |row| {
+            Ok(serde_json::json!({
+                "key_preview": row.get::<_, String>(0)?,
+                "service": row.get::<_, String>(1)?,
+                "api_base": row.get::<_, String>(2)?,
+                "note": row.get::<_, String>(3)?,
+                "is_expired": row.get::<_, i64>(4)? != 0,
+                "created_at": row.get::<_, String>(5)?,
+            }))
+        })
+        .map_err(|e| e.to_string())?;
+    let mut labels = Vec::new();
+    for row in rows {
+        labels.push(row.map_err(|e| e.to_string())?);
+    }
+    Ok(labels)
+}
+
+#[tauri::command]
+pub fn list_api_key_labels(app: AppHandle) -> Result<Vec<serde_json::Value>, String> {
+    let state = app.state::<DbState>();
+    let conn = state.conn.lock().map_err(|e| e.to_string())?;
+    list_labels_internal(&conn)
+}
+
+#[tauri::command]
+pub fn mark_expired(app: AppHandle, key_preview: String, expired: bool) -> Result<(), String> {
+    let state = app.state::<DbState>();
+    let conn = state.conn.lock().map_err(|e| e.to_string())?;
+    conn.execute(
+        "UPDATE api_key_labels SET is_expired = ?1 WHERE key_preview = ?2",
+        params![expired as i64, key_preview],
+    )
+    .map_err(|e| e.to_string())?;
+    Ok(())
+}
+
+#[tauri::command]
+pub fn export_labels_json(app: AppHandle) -> Result<String, String> {
+    let state = app.state::<DbState>();
+    let conn = state.conn.lock().map_err(|e| e.to_string())?;
+    let labels = list_labels_internal(&conn)?;
+    serde_json::to_string_pretty(&labels).map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+pub fn mark_toast_shown(app: AppHandle, key_preview: String) -> Result<(), String> {
+    let state = app.state::<DbState>();
+    let conn = state.conn.lock().map_err(|e| e.to_string())?;
+    conn.execute(
+        "INSERT OR IGNORE INTO toast_shown (key_preview) VALUES (?1)",
+        params![key_preview],
+    )
+    .map_err(|e| e.to_string())?;
+    Ok(())
+}
+
+#[tauri::command]
+pub fn is_toast_shown(app: AppHandle, key_preview: String) -> bool {
+    is_toast_shown_internal(&app, &key_preview)
+}
+
+#[tauri::command]
+pub fn set_user_api_key(app: AppHandle, id: String, value: bool) -> Result<(), String> {
+    let state = app.state::<DbState>();
+    let conn = state.conn.lock().map_err(|e| e.to_string())?;
+    conn.execute(
+        "UPDATE clipboard_records SET user_api_key = ?1 WHERE id = ?2",
+        params![value as i64, id],
+    )
+    .map_err(|e| e.to_string())?;
+    Ok(())
 }

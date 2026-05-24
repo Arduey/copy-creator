@@ -72,7 +72,8 @@
     "text": "文本",
     "image": "图片",
     "link": "链接",
-    "file": "文件"
+    "file": "文件",
+    "apikey": "API Key"
   },
   "phrases": {
     "search": "搜索短语...",

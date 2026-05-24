@@ -6,7 +6,7 @@ import SearchInput from "../../components/SearchInput";
 import { ClipboardCard } from "./ClipboardCard";
 import { TYPE_META } from "./utils";
 
-type ClipType = "all" | "text" | "image" | "link" | "file";
+type ClipType = "all" | "text" | "image" | "link" | "file" | "apikey";
 
 TYPE_META.text.icon = Icons.clipboard;
 TYPE_META.image.icon = Icons.image;
@@ -37,6 +37,7 @@ export default function ClipboardPage() {
     { key: "image", label: t("clipboard.image") },
     { key: "link", label: t("clipboard.link") },
     { key: "file", label: t("clipboard.file") },
+    { key: "apikey", label: t("clipboard.apikey") },
   ];
 
   const labels: Record<string, string> = useMemo(
@@ -64,10 +65,11 @@ export default function ClipboardPage() {
     [deleteRecord],
   );
 
-  const filtered = useMemo(
-    () => (category === "all" ? records : records.filter((r) => r.type === category)),
-    [records, category],
-  );
+  const filtered = useMemo(() => {
+    if (category === "all") return records;
+    if (category === "apikey") return records.filter((r) => r.is_api_key);
+    return records.filter((r) => r.type === category);
+  }, [records, category]);
 
   useEffect(() => {
     init();

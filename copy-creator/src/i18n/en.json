@@ -72,7 +72,8 @@
     "text": "Text",
     "image": "Image",
     "link": "Link",
-    "file": "File"
+    "file": "File",
+    "apikey": "API Key"
   },
   "phrases": {
     "search": "Search phrases...",

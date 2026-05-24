@@ -1,3 +1,5 @@
 releases/
 .trae/
 .claude/settings.local.json
+.agents/
+copy-creator/com.copycreator.app/

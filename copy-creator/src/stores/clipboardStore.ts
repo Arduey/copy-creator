@@ -4,8 +4,15 @@ import { listen } from "@tauri-apps/api/event";
 
 type UnlistenFn = () => void;
 
-export const CLIP_TYPES = ["all", "text", "image", "link", "file"] as const;
+export const CLIP_TYPES = ["all", "text", "image", "link", "file", "apikey"] as const;
 export type ClipType = (typeof CLIP_TYPES)[number];
+
+interface ApiKeyLabel {
+  service: string;
+  api_base: string;
+  note: string;
+  is_expired: boolean;
+}
 
 interface ClipboardRecord {
   id: string;
@@ -13,6 +20,11 @@ interface ClipboardRecord {
   content: string;
   source_app: string;
   created_at: string;
+  is_api_key?: boolean;
+  user_api_key?: boolean;
+  key_preview?: string;
+  guessed_service?: string | null;
+  label?: ApiKeyLabel | null;
 }
 
 interface ClipboardState {

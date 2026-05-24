@@ -5,6 +5,7 @@ import ClipboardPage from "./pages/ClipboardPage";
 import PhrasePage from "./pages/PhrasePage";
 import TranslationPage from "./pages/TranslationPage";
 import SettingsContent from "./components/SettingsContent";
+import ApiKeyToast from "./components/ApiKeyToast";
 import { useSettingsStore } from "./stores/settingsStore";
 import { Icons } from "./components/Icons";
 import i18n from "./i18n";
@@ -109,6 +110,7 @@ function App() {
   const isSettingsPanel = activePanel === "settings";
 
   return (
+    <>
     <div className="app-container">
       <div
         ref={sidebarRef}
@@ -190,6 +192,8 @@ function App() {
         </div>
       </div>
     </div>
+    <ApiKeyToast />
+    </>
   );
 }
 
